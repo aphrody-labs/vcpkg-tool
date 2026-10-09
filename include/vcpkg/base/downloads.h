@@ -7,6 +7,7 @@
 #include <vcpkg/base/expected.h>
 #include <vcpkg/base/json.h>
 #include <vcpkg/base/optional.h>
+#include <vcpkg/base/path.h>
 #include <vcpkg/base/span.h>
 #include <vcpkg/base/stringview.h>
 
@@ -48,6 +49,8 @@ namespace vcpkg
         std::vector<std::string> m_secrets;
         bool m_block_origin = false;
         Optional<std::string> m_script;
+        // Aphrody shared store root (APHRODY_STORE or x-aphrody-store): sha512-addressed downloads.
+        Optional<Path> m_aphrody_store;
     };
 
     // Handles downloading and uploading to a content addressable mirror

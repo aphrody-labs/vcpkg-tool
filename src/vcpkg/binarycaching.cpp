@@ -1,3 +1,4 @@
+#include <vcpkg/base/aphrody-store.h>
 #include <vcpkg/base/api-stable-format.h>
 #include <vcpkg/base/checks.h>
 #include <vcpkg/base/chrono.h>
@@ -1738,6 +1739,19 @@ namespace
             return std::move(path);
         }
 
+        auto maybe_store = aphrody_store_root();
+        if (auto store = maybe_store.get())
+        {
+            // The default files provider writes into the shared Aphrody store until aphrody-pkg ships a native one.
+            Path path = *store / "vcpkg" / "binary";
+            std::error_code ec;
+            real_filesystem.create_directories(path, ec);
+            if (!ec)
+            {
+                return std::move(path);
+            }
+        }
+
         return get_platform_cache_vcpkg().then([](Path p) -> ExpectedL<Path> {
             if (p.is_absolute())
             {
@@ -1888,7 +1902,7 @@ namespace
                 Path p = segments[1].second;
                 if (!p.is_absolute())
                 {
-                    return add_error(msg::format(msgInvalidArgumentRequiresAbsolutePath, msg::binary_source = "files"),
+                    return add_error(msg::format(msgInvalidArgumentRequiresPathArgument, msg::binary_source = "files"),
                                      segments[1].first);
                 }
 
@@ -1925,7 +1939,7 @@ namespace
                 if (!p.is_absolute())
                 {
                     return add_error(
-                        msg::format(msgInvalidArgumentRequiresAbsolutePath, msg::binary_source = "nugetconfig"),
+                        msg::format(msgInvalidArgumentRequiresPathArgument, msg::binary_source = "nugetconfig"),
                         segments[1].first);
                 }
 
@@ -2276,11 +2290,13 @@ namespace
         std::vector<std::string> azblob_templates_to_put;
         std::vector<std::string> secrets;
         Optional<std::string> script;
+        Optional<Path> aphrody_store;
 
         void clear()
         {
             cleared = true;
             block_origin = false;
+            aphrody_store.clear();
             url_templates_to_get.clear();
             azblob_templates_to_put.clear();
             secrets.clear();
@@ -2369,6 +2385,29 @@ namespace
                 }
                 handle_readwrite(
                     state->url_templates_to_get, state->azblob_templates_to_put, std::move(p), segments, 3);
+            }
+            else if (segments[0].second == "x-aphrody-store")
+            {
+                // Scheme: x-aphrody-store[,<absolute store root>] (default: APHRODY_STORE)
+                if (segments.size() > 2)
+                {
+                    return add_error(msg::format(msgInvalidArgumentRequiresOneOrTwoArguments,
+                                                 msg::binary_source = "x-aphrody-store"),
+                                     segments[2].first);
+                }
+
+                Optional<Path> root = segments.size() == 2 ? Optional<Path>{Path{segments[1].second}}
+                                                           : aphrody_store_root();
+                auto* path = root.get();
+                if (!path || !path->is_absolute())
+                {
+                    return add_error(msg::format(msgInvalidArgumentRequiresPathArgument,
+                                                 msg::binary_source = "x-aphrody-store"),
+                                     segments[0].first);
+                }
+
+                path->make_preferred();
+                state->aphrody_store = std::move(root);
             }
             else if (segments[0].second == "x-script")
             {
@@ -3175,6 +3214,7 @@ namespace vcpkg
 ExpectedL<AssetCachingSettings> vcpkg::parse_download_configuration(const Optional<std::string>& arg)
 {
     AssetCachingSettings result;
+    result.m_aphrody_store = aphrody_store_root();
     if (!arg || arg.get()->empty()) return result;
 
     get_global_metrics_collector().track_define(DefineMetric::AssetSource);
@@ -3220,6 +3260,15 @@ ExpectedL<AssetCachingSettings> vcpkg::parse_download_configuration(const Option
     result.m_secrets = std::move(s.secrets);
     result.m_block_origin = s.block_origin;
     result.m_script = std::move(s.script);
+    if (s.aphrody_store.has_value())
+    {
+        result.m_aphrody_store = std::move(s.aphrody_store);
+    }
+    else if (s.cleared)
+    {
+        result.m_aphrody_store.clear();
+    }
+
     return result;
 }
 
@@ -3383,6 +3432,10 @@ LocalizedString vcpkg::format_help_topic_asset_caching()
     table.format("clear", msg::format(msgHelpCachingClear));
     table.format("x-azurl,<url>[,<sas>[,<rw>]]", msg::format(msgHelpAssetCachingAzUrl));
     table.format("x-script,<template>", msg::format(msgHelpAssetCachingScript));
+    table.format("x-aphrody-store[,<root>]",
+                 LocalizedString::from_raw("Reads and writes sha512-addressed downloads in the shared Aphrody store "
+                                           "(<root>/blobs; default APHRODY_STORE), materialized by block clone, "
+                                           "hard link or copy"));
     table.format("x-block-origin", msg::format(msgHelpAssetCachingBlockOrigin));
     return msg::format(msgHelpAssetCaching)
         .append_raw('\n')

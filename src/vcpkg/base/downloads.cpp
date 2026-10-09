@@ -1,4 +1,5 @@
 #include <vcpkg/base/api-stable-format.h>
+#include <vcpkg/base/aphrody-store.h>
 #include <vcpkg/base/contractual-constants.h>
 #include <vcpkg/base/curl.h>
 #include <vcpkg/base/downloads.h>
@@ -971,6 +972,17 @@ namespace vcpkg
                                           maybe_sha512);
     }
 
+    static void maybe_ingest_aphrody_store(const Filesystem& fs,
+                                           const AssetCachingSettings& asset_cache_settings,
+                                           const Path& download_path,
+                                           const StringView* maybe_sha512)
+    {
+        if (auto store = asset_cache_settings.m_aphrody_store.get(); store && maybe_sha512)
+        {
+            aphrody_store_ingest(fs, *store, download_path, *maybe_sha512);
+        }
+    }
+
     static bool download_file_asset_cached_sanitized_sha(DiagnosticContext& context,
                                                          MessageSink& machine_readable_progress,
                                                          const AssetCachingSettings& asset_cache_settings,
@@ -999,6 +1011,23 @@ namespace vcpkg
         // * We consider hash check failure the same as a network I/O failure, and let other sources 'fix' the problem.
         //
         // See examples of console output in asset-caching.ps1
+
+        const auto& maybe_store = asset_cache_settings.m_aphrody_store;
+        if (auto store = maybe_store.get(); store && maybe_sha512)
+        {
+            const auto blob = aphrody_store_blob_path(*store, *maybe_sha512);
+            std::error_code ec;
+            if (fs.exists(blob, ec))
+            {
+                auto maybe_kind = materialize_file(fs, blob, download_path, ec);
+                if (auto kind = maybe_kind.get())
+                {
+                    context.statusln(LocalizedString::from_raw(
+                        fmt::format("aphrody store: {} -> {} ({})", blob.native(), display_path, to_string_literal(*kind))));
+                    return true;
+                }
+            }
+        }
 
         // Note: no secrets for the input URLs
         std::vector<SanitizedUrl> sanitized_urls =
@@ -1064,6 +1093,7 @@ namespace vcpkg
                                                                        out_sha512)))
         {
             asset_cache_attempt_context.commit();
+            maybe_ingest_aphrody_store(fs, asset_cache_settings, download_path, maybe_sha512);
             if (raw_urls.empty())
             {
                 context.statusln(msg::format(msgAssetCacheHit));
@@ -1139,6 +1169,7 @@ namespace vcpkg
             authoritative_attempt_context.handle();
             report_download_success_and_maybe_upload(
                 context, download_path, display_path, asset_cache_settings, maybe_sha512);
+            maybe_ingest_aphrody_store(fs, asset_cache_settings, download_path, maybe_sha512);
             return true;
         }
         else
@@ -1165,6 +1196,7 @@ namespace vcpkg
                 authoritative_attempt_context.handle();
                 report_download_success_and_maybe_upload(
                     context, download_path, display_path, asset_cache_settings, maybe_sha512);
+                maybe_ingest_aphrody_store(fs, asset_cache_settings, download_path, maybe_sha512);
                 return true;
             }
         }
